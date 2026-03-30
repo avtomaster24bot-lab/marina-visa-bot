@@ -1,0 +1,23 @@
+name: Marina Auto Poster
+
+on:
+  schedule:
+    - cron: '0 10 * * *'   # каждый день в 10:00 UTC (16:00 Алматы)
+  workflow_dispatch:        # возможность запустить вручную
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements-poster.txt
+      - name: Run poster
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        run: python post_generator.py
