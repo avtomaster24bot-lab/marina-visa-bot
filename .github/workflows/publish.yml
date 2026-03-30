@@ -2,7 +2,7 @@ name: Marina Auto Poster
 
 on:
   schedule:
-    - cron: '0 10 * * *'   # каждый день в 10:00 UTC (16:00 Алматы)
+    - cron: '0 3 * * *'   # каждый день в 10:00 UTC (16:00 Алматы)
   workflow_dispatch:        # возможность запустить вручную
 
 jobs:
