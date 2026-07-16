@@ -1,7 +1,9 @@
 import os
 import random
+import re
 import requests
 from datetime import datetime
+from urllib.parse import quote
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
@@ -213,7 +215,7 @@ def generate_post():
     return f"📅 {today}\n\n{post_body}"
 
 def send_to_telegram(text):
-    """Отправляет текст в Telegram канал."""
+    """Отправляет текст в Telegram канал (fallback, без изображения)."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHANNEL_ID,
@@ -221,12 +223,89 @@ def send_to_telegram(text):
         "parse_mode": "Markdown",
         "disable_web_page_preview": False
     }
-    response = requests.post(url, json=payload)
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+    except requests.RequestException as e:
+        print(f"Error sending message: {e}")
+        return False
     if response.status_code != 200:
         print(f"Error sending message: {response.text}")
-    else:
-        print("Post sent successfully!")
+        return False
+    print("Post sent successfully!")
+    return True
+
+# ========== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (Pollinations.AI) ==========
+def clean_text_for_prompt(text):
+    """Убирает markdown, ссылки, хэштеги и дату — оставляет чистый текст для промпта."""
+    text = re.sub(r'\*\*|\*|_', '', text)
+    text = re.sub(r'\[.*?\]\(.*?\)', '', text)
+    text = re.sub(r'#\S+', '', text)
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'^\s*📅?\s*\d{2}\.\d{2}\.\d{4}\s*', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def translate_to_english(text):
+    """Переводит текст на английский через бесплатный MyMemory API (без ключа)."""
+    try:
+        response = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text, "langpair": "ru|en"},
+            timeout=10,
+        )
+        if response.status_code == 200:
+            translated = response.json().get("responseData", {}).get("translatedText")
+            if translated:
+                return translated
+    except requests.RequestException as e:
+        print(f"Translation failed: {e}")
+    return text
+
+def generate_image_prompt(post_text):
+    """Строит промпт для изображения из первых 100 символов текста поста."""
+    snippet = clean_text_for_prompt(post_text)[:100]
+    translated = translate_to_english(snippet)
+    return f"{translated}, professional photo, visa and travel consulting theme, high quality"
+
+def fetch_pollinations_image(prompt):
+    """Запрашивает изображение у Pollinations.AI. Возвращает bytes или None при ошибке."""
+    try:
+        url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
+            return response.content
+        print(f"Image generation failed: status {response.status_code}")
+    except requests.RequestException as e:
+        print(f"Image generation error: {e}")
+    return None
+
+def send_photo_to_telegram(image_bytes, caption):
+    """Отправляет изображение с подписью в Telegram канал. Возвращает True/False."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    caption_text = caption if len(caption) <= 1024 else caption[:1021] + "..."
+    files = {"photo": ("post.jpg", image_bytes)}
+    data = {
+        "chat_id": CHANNEL_ID,
+        "caption": caption_text,
+        "parse_mode": "Markdown",
+    }
+    try:
+        response = requests.post(url, data=data, files=files, timeout=30)
+    except requests.RequestException as e:
+        print(f"Error sending photo: {e}")
+        return False
+    if response.status_code != 200:
+        print(f"Error sending photo: {response.text}")
+        return False
+    print("Post with image sent successfully!")
+    return True
 
 if __name__ == "__main__":
     post_text = generate_post()
-    send_to_telegram(post_text)
+    image_prompt = generate_image_prompt(post_text)
+    image_bytes = fetch_pollinations_image(image_prompt)
+
+    if image_bytes and send_photo_to_telegram(image_bytes, post_text):
+        pass
+    else:
+        send_to_telegram(post_text)
