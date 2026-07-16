@@ -272,7 +272,7 @@ def generate_image_prompt(post_text):
 def fetch_pollinations_image(prompt):
     """Запрашивает изображение у Pollinations.AI. Возвращает bytes или None при ошибке."""
     try:
-        url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+        url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&nologo=true"
         response = requests.get(url, timeout=30)
         if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
             return response.content
@@ -361,7 +361,7 @@ def _add_logo_overlay(composed, logo_path=LOGO_PATH):
         target_width = int(composed.width * 0.25)
         ratio = target_width / logo.width
         target_height = int(logo.height * ratio)
-        logo = logo.resize((target_width, target_height), Image.LANCZOS)
+        logo.thumbnail((target_width, target_height), Image.LANCZOS)
 
         alpha = logo.getchannel("A").point(lambda a: int(a * (200 / 255)))
         logo.putalpha(alpha)
