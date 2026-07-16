@@ -297,14 +297,44 @@ def _load_font(size):
             continue
     return ImageFont.load_default()
 
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002700-\U000027BF"
+    "\U0001F900-\U0001F9FF"
+    "\U00002600-\U000026FF"
+    "\U0001FA70-\U0001FAFF"
+    "\U0001F000-\U0001F0FF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE0F"
+    "\U0000200D"
+    "]+",
+    flags=re.UNICODE,
+)
+
+def strip_emoji(text):
+    """Удаляет emoji-символы юникода из текста."""
+    return EMOJI_PATTERN.sub("", text)
+
 def extract_image_title(post_text):
-    """Берёт первое предложение поста, ограничивая его 60 символами."""
+    """Берёт первое предложение поста (без emoji), максимум 80 символов, обрезая только по границе слова."""
     cleaned = clean_text_for_prompt(post_text)
+    cleaned = strip_emoji(cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
     match = re.search(r'[.!?]', cleaned)
     first_sentence = cleaned[:match.start() + 1].strip() if match else cleaned.strip()
-    if len(first_sentence) > 60:
-        return first_sentence[:60].rsplit(" ", 1)[0] + "…"
-    return first_sentence
+
+    if len(first_sentence) <= 80:
+        return first_sentence
+
+    truncated = first_sentence[:80]
+    if " " in truncated:
+        truncated = truncated.rsplit(" ", 1)[0]
+    return truncated.rstrip(",.;:") + "…"
 
 def _wrap_text(draw, text, font, max_width):
     words = text.split()
@@ -322,12 +352,33 @@ def _wrap_text(draw, text, font, max_width):
         lines.append(current)
     return lines
 
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
+
+def _add_logo_overlay(composed, logo_path=LOGO_PATH):
+    """Накладывает логотип в правый верхний угол (15% ширины картинки, alpha 200)."""
+    try:
+        logo = Image.open(logo_path).convert("RGBA")
+        target_width = int(composed.width * 0.15)
+        ratio = target_width / logo.width
+        target_height = int(logo.height * ratio)
+        logo = logo.resize((target_width, target_height), Image.LANCZOS)
+
+        alpha = logo.getchannel("A").point(lambda a: int(a * (200 / 255)))
+        logo.putalpha(alpha)
+
+        margin = int(composed.width * 0.03)
+        position = (composed.width - target_width - margin, margin)
+        composed.paste(logo, position, logo)
+    except Exception as e:
+        print(f"Logo overlay failed: {e}")
+    return composed
+
 def add_text_overlay(image_bytes, title):
     """
-    Накладывает заголовок на нижние 35% картинки: жирный белый текст
-    на затемнённой полупрозрачной подложке. Возвращает JPEG bytes или
-    None при любой ошибке (вызывающий код должен использовать исходную
-    картинку как fallback).
+    Накладывает заголовок на нижние 35% картинки (жирный белый текст на
+    затемнённой полупрозрачной подложке) и логотип в правый верхний угол.
+    Возвращает JPEG bytes или None при любой ошибке (вызывающий код должен
+    использовать исходную картинку как fallback).
     """
     try:
         base = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -359,6 +410,8 @@ def add_text_overlay(image_bytes, title):
             text_x = (width - line_width) // 2
             draw.text((text_x, text_y), line, font=font, fill=(255, 255, 255, 255))
             text_y += line_height
+
+        composed = _add_logo_overlay(composed)
 
         result = composed.convert("RGB")
         output = io.BytesIO()
