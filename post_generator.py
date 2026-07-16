@@ -1,9 +1,11 @@
+import io
 import os
 import random
 import re
 import requests
 from datetime import datetime
 from urllib.parse import quote
+from PIL import Image, ImageDraw, ImageFont
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
@@ -279,6 +281,93 @@ def fetch_pollinations_image(prompt):
         print(f"Image generation error: {e}")
     return None
 
+# ========== НАЛОЖЕНИЕ ТЕКСТА НА ИЗОБРАЖЕНИЕ (Pillow) ==========
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # ubuntu-latest (GitHub Actions)
+    "C:/Windows/Fonts/arialbd.ttf",                          # Windows (локальный тест)
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",     # macOS
+]
+
+def _load_font(size):
+    """Подбирает жирный шрифт с поддержкой кириллицы; иначе — дефолтный PIL-шрифт."""
+    for path in FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+def extract_image_title(post_text):
+    """Берёт первое предложение поста, ограничивая его 60 символами."""
+    cleaned = clean_text_for_prompt(post_text)
+    match = re.search(r'[.!?]', cleaned)
+    first_sentence = cleaned[:match.start() + 1].strip() if match else cleaned.strip()
+    if len(first_sentence) > 60:
+        return first_sentence[:60].rsplit(" ", 1)[0] + "…"
+    return first_sentence
+
+def _wrap_text(draw, text, font, max_width):
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        w = draw.textbbox((0, 0), candidate, font=font)[2]
+        if w <= max_width or not current:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+def add_text_overlay(image_bytes, title):
+    """
+    Накладывает заголовок на нижние 35% картинки: жирный белый текст
+    на затемнённой полупрозрачной подложке. Возвращает JPEG bytes или
+    None при любой ошибке (вызывающий код должен использовать исходную
+    картинку как fallback).
+    """
+    try:
+        base = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        width, height = base.size
+
+        overlay_height = int(height * 0.35)
+        overlay_top = height - overlay_height
+
+        rgba = base.convert("RGBA")
+        shade = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+        shade_draw = ImageDraw.Draw(shade)
+        shade_draw.rectangle([(0, overlay_top), (width, height)], fill=(0, 0, 0, 160))
+        composed = Image.alpha_composite(rgba, shade)
+
+        draw = ImageDraw.Draw(composed)
+        font_size = max(28, width // 16)
+        font = _load_font(font_size)
+
+        padding = int(width * 0.06)
+        max_text_width = width - 2 * padding
+        lines = _wrap_text(draw, title, font, max_text_width)
+
+        line_height = font.getbbox("Ай")[3] + 10
+        text_block_height = line_height * len(lines)
+        text_y = overlay_top + (overlay_height - text_block_height) // 2
+
+        for line in lines:
+            line_width = draw.textbbox((0, 0), line, font=font)[2]
+            text_x = (width - line_width) // 2
+            draw.text((text_x, text_y), line, font=font, fill=(255, 255, 255, 255))
+            text_y += line_height
+
+        result = composed.convert("RGB")
+        output = io.BytesIO()
+        result.save(output, format="JPEG", quality=90)
+        return output.getvalue()
+    except Exception as e:
+        print(f"Text overlay failed: {e}")
+        return None
+
 def send_photo_to_telegram(image_bytes, caption):
     """Отправляет изображение с подписью в Telegram канал. Возвращает True/False."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -305,7 +394,13 @@ if __name__ == "__main__":
     image_prompt = generate_image_prompt(post_text)
     image_bytes = fetch_pollinations_image(image_prompt)
 
-    if image_bytes and send_photo_to_telegram(image_bytes, post_text):
-        pass
+    if image_bytes:
+        title = extract_image_title(post_text)
+        overlaid_bytes = add_text_overlay(image_bytes, title)
+        final_image = overlaid_bytes if overlaid_bytes else image_bytes
+        if send_photo_to_telegram(final_image, post_text):
+            pass
+        else:
+            send_to_telegram(post_text)
     else:
         send_to_telegram(post_text)
