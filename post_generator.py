@@ -355,10 +355,10 @@ def _wrap_text(draw, text, font, max_width):
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
 
 def _add_logo_overlay(composed, logo_path=LOGO_PATH):
-    """Накладывает логотип в правый верхний угол (15% ширины картинки, alpha 200)."""
+    """Накладывает логотип в правый верхний угол (25% ширины картинки, alpha 200)."""
     try:
         logo = Image.open(logo_path).convert("RGBA")
-        target_width = int(composed.width * 0.15)
+        target_width = int(composed.width * 0.25)
         ratio = target_width / logo.width
         target_height = int(logo.height * ratio)
         logo = logo.resize((target_width, target_height), Image.LANCZOS)
