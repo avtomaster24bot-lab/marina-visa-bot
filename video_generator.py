@@ -70,7 +70,7 @@ def create_agnes_video(prompt: str) -> Optional[bytes]:
         "prompt": final_prompt,
         "width": 1080,
         "height": 1920,
-        "num_frames": 60,
+        "num_frames": 57,
     }
 
     try:
