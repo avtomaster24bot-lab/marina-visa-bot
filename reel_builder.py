@@ -10,37 +10,78 @@ MUSIC_DIR = ROOT / "assets" / "music"
 
 
 def _music_file() -> Optional[Path]:
+    """
+    Find a usable music file anywhere inside assets/music.
+    """
     if not MUSIC_DIR.exists():
+        print(f"[reel] music directory not found: {MUSIC_DIR}")
         return None
+
+    extensions = {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac"}
 
     files = [
         p
-        for p in MUSIC_DIR.iterdir()
-        if p.is_file()
-        and p.suffix.lower() in {".mp3", ".m4a", ".wav", ".aac"}
+        for p in MUSIC_DIR.rglob("*")
+        if p.is_file() and p.suffix.lower() in extensions
     ]
 
-    return random.choice(files) if files else None
+    print(f"[reel] found {len(files)} music file(s)")
+
+    if not files:
+        return None
+
+    music = random.choice(files)
+    print(f"[reel] selected music: {music}")
+    return music
+
+
+def _has_audio_stream(path: Path) -> bool:
+    """
+    Check that the final MP4 really contains an audio stream.
+    """
+    ffprobe = shutil.which("ffprobe")
+
+    if not ffprobe:
+        print("[reel] ffprobe not found; cannot verify audio stream")
+        return False
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        codec = result.stdout.strip()
+
+        if codec:
+            print(f"[reel] audio stream confirmed: {codec}")
+            return True
+
+        print("[reel] no audio stream found in final MP4")
+        return False
+
+    except Exception as exc:
+        print(f"[reel] ffprobe failed: {exc}")
+        return False
 
 
 def build_branded_reel(
     story_frames: list[bytes],
     source_video: bytes | None = None,
 ) -> Optional[bytes]:
-    """
-    Quality-first Reel builder.
-
-    Published Reel is built from branded 9:16 Story frames.
-
-    This guarantees:
-    - Russian text stays readable.
-    - Reel matches the same campaign as post/carousel.
-    - Agnes does not need to generate readable text.
-    - Raw meaningless AI video cannot replace the branded Reel.
-
-    Agnes source video can still be saved separately by smart_poster.py
-    as optional B-roll.
-    """
 
     if not story_frames:
         print("[reel] no Story frames; cannot build branded Reel")
@@ -49,7 +90,7 @@ def build_branded_reel(
     ffmpeg = shutil.which("ffmpeg")
 
     if not ffmpeg:
-        print("[reel] ffmpeg unavailable; branded Reel cannot be built")
+        print("[reel] ffmpeg unavailable")
         return None
 
     frames = story_frames[:4]
@@ -70,9 +111,12 @@ def build_branded_reel(
 
         out = td / "reel.mp4"
 
+        # ОСТАВЛЯЕМ ПРЕЖНЮЮ ДЛИТЕЛЬНОСТЬ
         seconds_per_slide = 1.55
         fps = 24
         frames_per_slide = int(seconds_per_slide * fps)
+
+        total_duration = seconds_per_slide * len(image_paths)
 
         cmd = [ffmpeg, "-y"]
 
@@ -127,8 +171,6 @@ def build_branded_reel(
             "[outv]",
         ]
 
-        total_duration = seconds_per_slide * len(image_paths)
-
         if music:
             music_index = len(image_paths)
 
@@ -137,17 +179,14 @@ def build_branded_reel(
                 f"{music_index}:a:0",
                 "-af",
                 (
-                    "volume=0.16,"
-                    "afade=t=in:st=0:d=0.45,"
-                    f"afade=t=out:"
-                    f"st={max(0.5, total_duration - 0.7):.2f}:"
-                    "d=0.6"
+                    "volume=0.24,"
+                    "afade=t=in:st=0:d=0.35,"
+                    f"afade=t=out:st={max(0.5, total_duration - 0.5):.2f}:d=0.45"
                 ),
-                "-shortest",
                 "-c:a",
                 "aac",
                 "-b:a",
-                "160k",
+                "192k",
             ]
 
         cmd += [
@@ -168,6 +207,12 @@ def build_branded_reel(
             str(out),
         ]
 
+        print(
+            f"[reel] building Reel: "
+            f"{total_duration:.2f}s "
+            f"music={'yes' if music else 'no'}"
+        )
+
         try:
             result = subprocess.run(
                 cmd,
@@ -181,9 +226,12 @@ def build_branded_reel(
             return None
 
         if result.returncode != 0 or not out.exists():
-            print("[reel] ffmpeg failed; stderr follows:")
-            print(result.stderr[-3000:])
+            print("[reel] ffmpeg failed:")
+            print(result.stderr[-4000:])
             return None
+
+        if music:
+            _has_audio_stream(out)
 
         reel = out.read_bytes()
 
@@ -195,7 +243,7 @@ def build_branded_reel(
             return None
 
         print(
-            f"[reel] branded motion Reel ready: "
+            f"[reel] Reel ready: "
             f"{len(reel)} bytes; "
             f"slides={len(image_paths)}; "
             f"music={'yes' if music else 'no'}"
