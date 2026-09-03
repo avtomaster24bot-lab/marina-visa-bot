@@ -2,12 +2,10 @@ import io
 import json
 import os
 from pathlib import Path
-from urllib.parse import quote
-
 import requests
-from PIL import Image
 
 from content_generator import generate_content_plan
+from image_generator import create_hero_image
 from media_library import choose_client_image, choose_client_video
 from post_generator import send_to_telegram
 from reel_builder import build_branded_reel
@@ -17,31 +15,6 @@ from video_generator import create_agnes_video
 ROOT = Path(__file__).resolve().parent
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
-
-
-def _pollinations_image(prompt: str):
-    """Existing primary image provider, but with a much stronger art-directed prompt."""
-    try:
-        final_prompt = (
-            prompt.strip()
-            + ", premium travel advertising campaign, sophisticated editorial photography, visual storytelling, "
-              "cinematic natural light, refined composition, realistic anatomy, elegant color grading, high-end tourism brand aesthetic, "
-              "no readable text, no watermark, no generated logo, no fake visa stamp, no readable personal data"
-        )
-        url = f"https://image.pollinations.ai/prompt/{quote(final_prompt)}"
-        print("[image] requesting art-directed Pollinations image...")
-        r = requests.get(url, timeout=(15, 150))
-        r.raise_for_status()
-        ct = (r.headers.get("content-type") or "").lower()
-        if "image" not in ct or len(r.content) < 5000:
-            raise RuntimeError(f"bad image response: {ct}, {len(r.content)} bytes")
-        im = Image.open(io.BytesIO(r.content))
-        im.verify()
-        print(f"[image] image ready: {len(r.content)} bytes")
-        return r.content
-    except Exception as exc:
-        print(f"[image] Pollinations failed: {exc}")
-        return None
 
 
 def _send_video(video_bytes: bytes, caption: str, thumbnail: bytes | None = None) -> bool:
@@ -110,9 +83,9 @@ def main():
 
     print("STEP 2/9: hero visual")
     raw_image = choose_client_image()
-    image_source = "client" if raw_image else "pollinations"
+    image_source = "client" if raw_image else "none"
     if not raw_image:
-        raw_image = _pollinations_image(plan.image_prompt)
+        raw_image, image_source = create_hero_image(plan.image_prompt)
     poster = build_poster(raw_image, plan.headline, plan.subheadline) if raw_image else None
 
     print("STEP 3/9: cinematic source video")
