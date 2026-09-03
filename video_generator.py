@@ -61,7 +61,7 @@ def create_agnes_video(prompt: str) -> Optional[bytes]:
     final_prompt = (
         (prompt or "").strip()
         + " No dialogue, no voice-over, no narration, no captions, no readable text, no generated logos, no watermark. "
-          "Do not show forged visas, fake stamps, altered passports, or readable personal data."
+          "Do not show forged visas, fake stamps, altered passports, or readable personal data. Avoid generic office stock-video composition, static notebook shots, awkward posing, beauty-portrait framing, or empty paperwork as the main subject."
     )
     payload = {
         "model": AGNES_VIDEO_MODEL,
@@ -72,7 +72,7 @@ def create_agnes_video(prompt: str) -> Optional[bytes]:
         "frame_rate": 24,
         "negative_prompt": (
             "readable passport data, fake visa, forged document, fake stamp, altered document, readable personal data, "
-            "distorted hands, extra fingers, captions, letters, watermark, generated logo, dialogue, voice-over, narration"
+            "distorted hands, extra fingers, captions, letters, watermark, generated logo, dialogue, voice-over, narration, static notebook, generic office portrait, awkward face close-up, empty paperwork"
         ),
     }
 
