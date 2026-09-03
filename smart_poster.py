@@ -77,27 +77,67 @@ def _validate(plan, poster: bytes | None) -> bool:
     return True
 
 
+def _build_social_backgrounds(plan, hero_image: bytes | None) -> list[bytes]:
+    """Generate five visually different scenes for the same campaign.
+
+    Quality-first but failure-safe: if one social image fails, reuse the hero/last good
+    scene rather than breaking Telegram or the whole workflow.
+    """
+    generated = ROOT / "generated" / "social_visuals"
+    generated.mkdir(parents=True, exist_ok=True)
+    for p in generated.glob("*.jpg"):
+        p.unlink()
+
+    backgrounds: list[bytes] = []
+    prompts = list(getattr(plan, "social_visual_prompts", []) or [])[:5]
+
+    for i, prompt in enumerate(prompts, 1):
+        print(f"[social-image] generating scene {i}/{len(prompts)}")
+        raw, source = create_hero_image(prompt)
+        if raw:
+            backgrounds.append(raw)
+            (generated / f"scene_{i}.jpg").write_bytes(raw)
+            print(f"[social-image] scene {i} ready via {source}")
+        else:
+            fallback = backgrounds[-1] if backgrounds else hero_image
+            if fallback:
+                backgrounds.append(fallback)
+                (generated / f"scene_{i}.jpg").write_bytes(fallback)
+                print(f"[social-image] scene {i} fallback used")
+
+    while hero_image and len(backgrounds) < 5:
+        backgrounds.append(hero_image)
+
+    return backgrounds[:5]
+
+
 def main():
     generated = ROOT / "generated"
     generated.mkdir(exist_ok=True)
 
-    print("STEP 1/9: creative direction + content plan")
+    print("STEP 1/10: creative direction + content plan")
     plan = generate_content_plan()
     print(f"[plan] {plan.country} | {plan.content_format} | {plan.headline}")
+    print(f"[plan] carousel: {plan.carousel_slides}")
+    print(f"[plan] stories: {plan.story_slides}")
 
-    print("STEP 2/9: premium hero visual")
+    print("STEP 2/10: premium hero visual")
     raw_image = choose_client_image()
     image_source = "client" if raw_image else "none"
     if not raw_image:
         raw_image, image_source = create_hero_image(plan.image_prompt)
     poster = build_poster(raw_image, plan.headline, plan.subheadline) if raw_image else None
 
-    print("STEP 3/9: build Instagram carousel + Stories first")
-    carousel = build_carousel(plan.carousel_slides, raw_image) if raw_image else []
-    stories = build_stories(plan.story_slides, raw_image) if raw_image else []
+    print("STEP 3/10: generate five campaign social scenes")
+    social_backgrounds = _build_social_backgrounds(plan, raw_image)
+
+    print("STEP 4/10: build carousel + Stories from different scenes")
+    carousel = build_carousel(plan.carousel_slides, social_backgrounds) if social_backgrounds else []
+    # Stories use first four campaign scenes, giving Reel four different visuals too.
+    stories = build_stories(plan.story_slides, social_backgrounds[:4]) if social_backgrounds else []
     save_social_assets(carousel, stories)
 
-    print("STEP 4/9: optional Agnes cinematic B-roll")
+    print("STEP 5/10: optional Agnes cinematic B-roll")
     source_video = choose_client_video()
     video_source = "client" if source_video else "agnes"
     if not source_video:
@@ -105,15 +145,14 @@ def main():
     if not source_video:
         video_source = "none"
 
-    # Preserve raw B-roll for review, but never let a weak/raw clip replace the branded Reel.
     if source_video:
         (generated / "agnes_broll.mp4").write_bytes(source_video)
         print(f"[video] raw B-roll saved for review: {len(source_video)} bytes")
 
-    print("STEP 5/9: build deterministic branded Reel from Story frames")
+    print("STEP 6/10: build branded Reel from four distinct Story scenes")
     reel = build_branded_reel(stories, source_video=source_video)
 
-    print("STEP 6/9: save full social package")
+    print("STEP 7/10: save full social package")
     (generated / "content_plan.json").write_text(
         json.dumps(plan.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -123,7 +162,7 @@ def main():
     if reel:
         (generated / "reel.mp4").write_bytes(reel)
 
-    print("STEP 7/9: validate main post")
+    print("STEP 8/10: validate main post")
     if not _validate(plan, poster):
         print("[validate] smart package rejected; safe legacy fallback")
         import post_generator
@@ -139,8 +178,7 @@ def main():
         send_to_telegram(legacy_text)
         return
 
-    print("STEP 8/9: publish Telegram in two coherent messages")
-    # IMPORTANT: the image is ALWAYS the main post. A Reel never replaces it.
+    print("STEP 9/10: publish Telegram in two coherent messages")
     main_post_ok = _send_photo(poster, plan.telegram_text)
     if not main_post_ok:
         main_post_ok = send_to_telegram(plan.telegram_text)
@@ -152,13 +190,14 @@ def main():
     else:
         print("[telegram] Reel unavailable; main poster still published")
 
-    print("STEP 9/9: result")
+    print("STEP 10/10: result")
     print(
         "RESULT: "
         f"telegram_main={'yes' if main_post_ok else 'no'} "
         f"image={image_source if raw_image else 'none'} "
         f"broll={video_source} "
         f"reel={'yes' if reel_ok else 'no'} "
+        f"social_scenes={len(social_backgrounds)} "
         f"carousel={len(carousel)} stories={len(stories)}"
     )
 
