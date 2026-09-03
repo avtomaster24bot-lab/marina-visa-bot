@@ -37,6 +37,15 @@ VISUAL_ARCHETYPES = [
     "city_arrival: cinematic arrival in the destination, architecture dominant, traveler small in frame, crisp commercial photography, no beauty portrait",
 ]
 
+_BAD_ENDINGS = {
+    "в", "на", "за", "из", "с", "со", "к", "по", "о", "об", "от", "до", "для", "при", "без",
+    "и", "а", "но", "или", "что", "как", "если", "чтобы", "это", "не"
+}
+_FORBIDDEN_SOCIAL = (
+    "ссылка в шапке", "link in bio", "100%", "гарантия визы", "без отказа",
+    "консульство точно", "вам одобрят", "марина разберётся за вас",
+)
+
 
 @dataclass
 class ContentPlan:
@@ -56,6 +65,7 @@ class ContentPlan:
     reel_cta: str
     carousel_slides: list[str]
     story_slides: list[str]
+    social_visual_prompts: list[str]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -68,7 +78,7 @@ def _headers() -> dict:
     }
 
 
-def _agnes_chat(system_prompt: str, user_prompt: str, max_tokens: int = 2400) -> Optional[str]:
+def _agnes_chat(system_prompt: str, user_prompt: str, max_tokens: int = 3000) -> Optional[str]:
     if not os.getenv("AGNES_API_KEY", "").strip():
         print("[content] AGNES_API_KEY is not set")
         return None
@@ -78,12 +88,15 @@ def _agnes_chat(system_prompt: str, user_prompt: str, max_tokens: int = 2400) ->
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.78,
+        "temperature": 0.62,
         "max_tokens": max_tokens,
         "stream": False,
     }
     try:
-        r = requests.post(f"{AGNES_BASE_URL}/v1/chat/completions", headers=_headers(), json=payload, timeout=(15, 100))
+        r = requests.post(
+            f"{AGNES_BASE_URL}/v1/chat/completions",
+            headers=_headers(), json=payload, timeout=(15, 110)
+        )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"].strip() or None
     except Exception as exc:
@@ -107,8 +120,123 @@ def _extract_json(text: str) -> Optional[dict]:
             return None
 
 
+def _clean_slide(text: str) -> str:
+    s = re.sub(r"\s+", " ", str(text or "")).strip(" \t\n\r-–—:;,.!")
+    s = s.replace("LIDER TOUR", "Lider Tour")
+    return s
+
+
+def _valid_slide(text: str, *, max_words: int, max_chars: int) -> bool:
+    s = _clean_slide(text)
+    if not s:
+        return False
+    low = s.lower()
+    if any(x in low for x in _FORBIDDEN_SOCIAL):
+        return False
+    words = s.split()
+    if len(words) < 2 or len(words) > max_words or len(s) > max_chars:
+        return False
+    if words[-1].lower().strip("?!.,:;") in _BAD_ENDINGS:
+        return False
+    # Reject obvious fragment endings and malformed mixed tokens.
+    if s.endswith(":") or re.search(r"\b[А-Яа-яЁё]{1}$", s):
+        return False
+    return True
+
+
+def _fallback_social(country: str) -> tuple[list[str], list[str]]:
+    carousel = [
+        f"ВИЗА В {country.upper()}: С ЧЕГО НАЧАТЬ?",
+        "ИНФОРМАЦИИ МНОГО, А ЯСНОСТИ НЕТ",
+        "СНАЧАЛА РАЗБЕРИТЕ СВОЮ СИТУАЦИЮ",
+        "МАРИНА ПОМОЖЕТ СОБРАТЬ ПЛАН ДЕЙСТВИЙ",
+        "ЕСТЬ ВОПРОСЫ? НАПИШИТЕ НАМ",
+    ]
+    stories = [
+        f"ПЛАНИРУЕТЕ ПОЕЗДКУ В {country.upper()}?",
+        "НЕ ЗНАЕТЕ, С ЧЕГО НАЧАТЬ?",
+        "РАЗБЕРЁМ ВАШУ СИТУАЦИЮ ПО ШАГАМ",
+        "НАПИШИТЕ МАРИНЕ",
+    ]
+    return carousel, stories
+
+
+
+
+def _review_social_copy(country: str, carousel_raw, stories_raw) -> tuple[list[str], list[str]]:
+    """Second Agnes pass used as a Russian copy editor before deterministic gates."""
+    carousel = carousel_raw if isinstance(carousel_raw, list) else []
+    stories = stories_raw if isinstance(stories_raw, list) else []
+    prompt = f"""Ты строгий редактор русского рекламного текста. Исправь только короткие фразы карусели и Stories для визового сервиса.
+Направление: {country}.
+
+Проверь каждую фразу на:
+- грамматику и согласование слов;
+- естественный современный русский;
+- законченность мысли;
+- отсутствие обрыва;
+- отсутствие канцелярита и бессмысленных абстракций;
+- отсутствие обещаний результата;
+- отсутствие CTA «ссылка в шапке профиля»;
+- карусель: до 8 слов и до 58 символов;
+- Stories: до 7 слов и до 46 символов.
+
+Структуру сохрани:
+карусель = hook -> проблема -> объяснение -> решение -> CTA;
+stories = hook -> вопрос/напряжение -> решение -> CTA.
+
+Исходная карусель: {json.dumps(carousel, ensure_ascii=False)}
+Исходные Stories: {json.dumps(stories, ensure_ascii=False)}
+
+Верни только JSON:
+{{"carousel_slides":[ровно 5 строк],"story_slides":[ровно 4 строки]}}"""
+    reviewed = _extract_json(_agnes_chat(
+        "Ты безошибочный русскоязычный copy editor. Верни только JSON без markdown.",
+        prompt,
+        max_tokens=800,
+    ) or "")
+    if not reviewed:
+        print("[content] social copy review unavailable; deterministic gate will be used")
+        return carousel, stories
+    return reviewed.get("carousel_slides", carousel), reviewed.get("story_slides", stories)
+
+
+def _quality_gate_social(country: str, carousel_raw, stories_raw) -> tuple[list[str], list[str]]:
+    fallback_car, fallback_sto = _fallback_social(country)
+
+    carousel = []
+    raw = carousel_raw if isinstance(carousel_raw, list) else []
+    for i in range(5):
+        candidate = _clean_slide(raw[i]) if i < len(raw) else ""
+        carousel.append(candidate if _valid_slide(candidate, max_words=8, max_chars=58) else fallback_car[i])
+
+    stories = []
+    raw_s = stories_raw if isinstance(stories_raw, list) else []
+    for i in range(4):
+        candidate = _clean_slide(raw_s[i]) if i < len(raw_s) else ""
+        stories.append(candidate if _valid_slide(candidate, max_words=7, max_chars=46) else fallback_sto[i])
+
+    print(f"[content] social quality gate: carousel={len(carousel)} stories={len(stories)}")
+    return carousel, stories
+
+
+def _default_social_visuals(d: dict) -> list[str]:
+    common = (
+        f"{d['visual']}. Premium cinematic travel campaign photography, sharp crisp focus, realistic geometry, "
+        "no readable text, no logos, no watermark, no close-up face, no close-up hands, vertical composition with safe negative space for typography. "
+    )
+    return [
+        common + "Scene 1: iconic destination cityscape or architectural arrival view, destination is unmistakable, wide establishing shot, aspirational morning or golden-hour light.",
+        common + "Scene 2: elegant airport or railway departure concourse, traveler small and seen from behind with one suitcase, strong leading lines, clean premium travel mood.",
+        common + "Scene 3: editorial travel preparation still life with closed passport cover, map, luggage tag and neat travel folder, no personal data, no hands, sophisticated table composition.",
+        common + "Scene 4: traveler from behind moving through the destination or terminal, architecture dominant, sense of progress and confidence, medium-wide shot.",
+        common + "Scene 5: clean premium destination skyline or terminal window scene with generous negative space, elegant luggage detail, calm confident CTA-ready composition.",
+    ]
+
+
 def _fallback() -> ContentPlan:
     d = random.choice(DESTINATIONS)
+    carousel, stories = _fallback_social(d["country"])
     return ContentPlan(
         country=d["country"], service=d["service"], content_format="clarity",
         angle="поездка уже в планах, а визовую подготовку хочется пройти спокойно",
@@ -124,12 +252,13 @@ def _fallback() -> ContentPlan:
         ),
         instagram_caption=f"Поездка в {d['country']} уже в планах? Визовую подготовку легче проходить, когда она разложена по понятным шагам. Марина поможет структурировать вашу ситуацию и подготовиться без хаотичного поиска. Заявка: {BOT_LINK}",
         image_prompt=(f"Premium travel campaign photograph, {d['visual']}. Destination-first composition, cinematic natural light, sophisticated editorial travel advertising, subtle closed passport and travel folder in foreground, no readable data, no text, no logos, no watermark, no generic woman posing at desk, photorealistic, 4:5 vertical."),
-        video_prompt=(f"Premium cinematic vertical travel commercial for {d['country']}. Open on a beautiful destination/departure moment, then a natural close-up of a closed passport and travel folder in hand, then traveler confidently moving toward departure. 3 distinct shots, elegant camera movement, premium lighting, aspirational not bureaucratic, no dialogue, no generated text, no logos, 9:16."),
+        video_prompt=(f"Premium cinematic vertical travel commercial for {d['country']}. Open on a beautiful destination/departure moment, then a natural travel preparation detail, then traveler confidently moving toward departure. 3 distinct shots, elegant camera movement, premium lighting, aspirational not bureaucratic, no dialogue, no generated text, no logos, 9:16."),
         reel_hook=f"ПЛАНИРУЕТЕ {d['country'].upper()}?",
         reel_middle="ВИЗОВУЮ ПОДГОТОВКУ МОЖНО УПРОСТИТЬ",
         reel_cta="РАЗБЕРЁМ ВАШУ СИТУАЦИЮ",
-        carousel_slides=["ПОЕЗДКА УЖЕ В ПЛАНАХ?", "НЕ НАЧИНАЙТЕ С ХАОТИЧНОГО ПОИСКА", "СНАЧАЛА РАЗБЕРИТЕ СВОЮ СИТУАЦИЮ", "ПРОВЕРЬТЕ ПОДГОТОВКУ ПО ШАГАМ", "НУЖНА ПОМОЩЬ? НАПИШИТЕ МАРИНЕ"],
-        story_slides=["ПЛАНИРУЕТЕ ПОЕЗДКУ?", "ВИЗОВАЯ ЧАСТЬ ВЫЗЫВАЕТ ВОПРОСЫ?", "РАЗБЕРЁМ ПОДГОТОВКУ ПО ШАГАМ", "ЗАЯВКА В MARINA VISA BOT"],
+        carousel_slides=carousel,
+        story_slides=stories,
+        social_visual_prompts=_default_social_visuals(d),
     )
 
 
@@ -139,20 +268,20 @@ def generate_content_plan() -> ContentPlan:
     archetype = random.choice(VISUAL_ARCHETYPES)
 
     system = """Ты креативный директор и senior performance-копирайтер премиального визового сервиса в Казахстане.
-Твоя задача: создавать не типичный скучный AI-пост, а цельную рекламную кампанию из одного сильного инсайта.
+Создай цельную рекламную кампанию из одного сильного инсайта.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
 1. Никаких выдуманных визовых требований, сроков, сборов, списков документов, финансовых норм, вероятности одобрения или гарантий.
-2. Не использовать страх, давление, фразы «консульство откажет», «ошибка = отказ», «100%».
-3. Не писать банальности вроде «мечтаете о путешествии?» без конкретной жизненной сцены.
-4. Один пост = одна идея. Визуал и видео должны раскрывать ту же идею.
-5. Визуал должен быть destination-first и aspirational. Архитектура, город, аэропорт, поездка и атмосфера — главные герои.
-6. Не ставь человеческое лицо крупным планом. Не делай руки, лицо или фигуру главным объектом. Если нужен человек — показывай со спины, сбоку на среднем/дальнем плане или как маленькую часть сцены.
-7. Картинка должна выглядеть как резкая premium travel campaign/editorial, а не stock office photo: sharp focus, crisp detail, realistic geometry, no blur.
-8. Видео должно иметь 3 понятных визуальных бита и движение. Не просто руки листают пустой блокнот.
-9. На AI-видео НЕ проси генерировать надписи. Титры мы наложим программно.
-10. Пиши естественным русским языком. Не использовать канцелярит и чрезмерное количество эмодзи.
-11. image_prompt и video_prompt пиши на английском.
+2. Не использовать страх, давление, «100%», «без отказа» и обещания за консульство.
+3. Один пост = одна идея. Визуал, карусель, Stories и видео раскрывают ту же идею.
+4. Визуал destination-first: страна, архитектура, аэропорт, дорога, поездка. Лица/руки не являются главным объектом.
+5. Картинки резкие, premium editorial/commercial, realistic geometry, no blur.
+6. На AI-видео и AI-картинках не проси генерировать надписи: текст накладывается программно.
+7. Русский язык должен быть грамотным, естественным и законченным.
+8. КАРУСЕЛЬ: ровно 5 самостоятельных законченных фраз. Каждая 2-8 слов и максимум 58 символов. Нельзя обрывать фразу. Нельзя заканчивать предлогом/союзом. Структура: hook -> проблема -> объяснение -> решение -> CTA.
+9. STORIES: ровно 4 самостоятельных законченных фразы. Каждая 2-7 слов и максимум 46 символов. Структура: hook -> вопрос/напряжение -> решение -> CTA.
+10. Запрещены CTA «ссылка в шапке профиля» и «link in bio». Используй универсально: «Напишите нам», «Напишите Марине», «Оставьте заявку».
+11. social_visual_prompts: ровно 5 РАЗНЫХ сцен одной кампании. Все на английском. Сцены должны визуально отличаться, но сохранять одну страну/палитру/настроение. Каждая сцена безопасна для crop 4:5 и 9:16 и имеет negative space под текст.
 Верни только валидный JSON без markdown."""
 
     user = f"""Создай кампанию для направления: {d['country']}.
@@ -170,28 +299,50 @@ JSON строго такой структуры:
  "content_format":"{fmt}",
  "angle":"...",
  "goal":"получить заявку на консультацию",
- "headline":"сильный рекламный заголовок 3-7 слов, БЕЗ точки, не повторяющий страну дважды",
+ "headline":"сильный рекламный заголовок 3-7 слов",
  "subheadline":"короткая расшифровка до 8 слов",
- "telegram_text":"130-190 слов. Сцена узнавания -> внутреннее напряжение/задача -> как помогает Марина -> спокойный CTA. Никакой воды. Добавь телефон и ссылку.",
- "instagram_caption":"70-110 слов, короче и динамичнее Telegram",
- "image_prompt":"подробный premium commercial/editorial travel prompt 4:5; destination-first; architecture/environment dominant; sharp crisp focus; specify foreground/midground/background, lens feel, light, atmosphere; no close-up face, no close-up hands, people only distant/from behind when needed; no blur, no malformed anatomy, no duplicate objects, no readable text/data/logos",
- "video_prompt":"vertical 9:16 premium travel commercial, 6-8 seconds, exactly 3 visual beats/shots described in sequence, meaningful camera movement, destination + travel preparation, aspirational, no dialogue/no captions/no generated text/no logos",
- "reel_hook":"2-5 слов для первых 2 секунд",
- "reel_middle":"3-7 слов для середины",
- "reel_cta":"2-6 слов финального CTA",
- "carousel_slides":["5 слайдов, первый — сильный hook, остальные раскрывают одну мысль, каждый до 9 слов"],
- "story_slides":["4 экрана, каждый до 9 слов, hook -> tension -> solution -> CTA"]
+ "telegram_text":"130-190 слов: узнаваемая сцена -> задача -> как помогает Марина -> CTA; добавь телефон и ссылку",
+ "instagram_caption":"70-110 слов",
+ "image_prompt":"premium commercial/editorial travel prompt 4:5, destination-first, sharp crisp focus, no close-up faces/hands, no text/data/logos",
+ "video_prompt":"vertical 9:16 premium travel commercial, 6-8 seconds, exactly 3 visual beats, no dialogue/captions/generated text/logos",
+ "reel_hook":"2-5 слов",
+ "reel_middle":"3-7 слов",
+ "reel_cta":"2-6 слов",
+ "carousel_slides":["ровно 5 коротких законченных фраз"],
+ "story_slides":["ровно 4 коротких законченных фразы"],
+ "social_visual_prompts":["ровно 5 разных English visual prompts for 5 different scenes of the same campaign"]
 }}"""
 
     data = _extract_json(_agnes_chat(system, user) or "")
     if not data:
         return _fallback()
+
     try:
         tg = str(data["telegram_text"]).strip()
         if not tg.startswith("📅"):
             tg = f"📅 {datetime.now().strftime('%d.%m.%Y')}\n\n{tg}"
+
+        country = str(data.get("country") or d["country"]).strip()
+        reviewed_carousel, reviewed_stories = _review_social_copy(
+            country,
+            data.get("carousel_slides", []),
+            data.get("story_slides", []),
+        )
+        carousel, stories = _quality_gate_social(
+            country,
+            reviewed_carousel,
+            reviewed_stories,
+        )
+
+        prompts_raw = data.get("social_visual_prompts", [])
+        prompts = [str(x).strip() for x in prompts_raw if str(x).strip()] if isinstance(prompts_raw, list) else []
+        defaults = _default_social_visuals(d)
+        while len(prompts) < 5:
+            prompts.append(defaults[len(prompts)])
+        prompts = prompts[:5]
+
         return ContentPlan(
-            country=str(data.get("country") or d["country"]).strip(),
+            country=country,
             service=str(data.get("service") or d["service"]).strip(),
             content_format=str(data.get("content_format") or fmt).strip(),
             angle=str(data.get("angle") or angle).strip(),
@@ -205,8 +356,9 @@ JSON строго такой структуры:
             reel_hook=str(data["reel_hook"]).strip(),
             reel_middle=str(data["reel_middle"]).strip(),
             reel_cta=str(data["reel_cta"]).strip(),
-            carousel_slides=[str(x).strip() for x in data.get("carousel_slides", [])][:5],
-            story_slides=[str(x).strip() for x in data.get("story_slides", [])][:4],
+            carousel_slides=carousel,
+            story_slides=stories,
+            social_visual_prompts=prompts,
         )
     except Exception as exc:
         print(f"[content] invalid plan fields: {exc}")
