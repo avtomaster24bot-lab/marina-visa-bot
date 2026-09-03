@@ -31,10 +31,10 @@ CONTENT_FORMATS = [
 ]
 
 VISUAL_ARCHETYPES = [
-    "destination_first: iconic destination is the hero, documents only as a subtle foreground cue, no generic office portrait",
-    "departure_moment: premium airport or train departure scene, elegant luggage and travel folder, traveler shown naturally from side or behind",
-    "editorial_flatlay: premium travel editorial flat lay with passport cover closed, boarding-style travel objects, city map and destination cues, no readable personal data",
-    "consultation_scene: over-the-shoulder consultation with two people, documents not readable, warm premium office, destination image visible in background",
+    "destination_landmark: destination architecture and travel atmosphere are the hero; no foreground face; if people appear they are small, from behind, or distant",
+    "departure_moment: premium airport or railway departure scene with elegant luggage; traveler from behind at medium/wide distance; no visible hands close-up",
+    "editorial_travel_objects: premium luggage, closed passport cover, map and destination objects arranged naturally; no hands, no readable data, no duplicate objects",
+    "city_arrival: cinematic arrival in the destination, architecture dominant, traveler small in frame, crisp commercial photography, no beauty portrait",
 ]
 
 
@@ -146,12 +146,13 @@ def generate_content_plan() -> ContentPlan:
 2. Не использовать страх, давление, фразы «консульство откажет», «ошибка = отказ», «100%».
 3. Не писать банальности вроде «мечтаете о путешествии?» без конкретной жизненной сцены.
 4. Один пост = одна идея. Визуал и видео должны раскрывать ту же идею.
-5. Визуал должен быть destination-first и aspirational. Никаких безликих «женщина сидит за столом и смотрит в бумаги» как основной концепции.
-6. Картинка должна выглядеть как premium travel campaign/editorial, а не stock office photo.
-7. Видео должно иметь 3 понятных визуальных бита и движение. Не просто руки листают пустой блокнот.
-8. На AI-видео НЕ проси генерировать надписи. Титры мы наложим программно.
-9. Пиши естественным русским языком. Не использовать канцелярит и чрезмерное количество эмодзи.
-10. image_prompt и video_prompt пиши на английском.
+5. Визуал должен быть destination-first и aspirational. Архитектура, город, аэропорт, поездка и атмосфера — главные герои.
+6. Не ставь человеческое лицо крупным планом. Не делай руки, лицо или фигуру главным объектом. Если нужен человек — показывай со спины, сбоку на среднем/дальнем плане или как маленькую часть сцены.
+7. Картинка должна выглядеть как резкая premium travel campaign/editorial, а не stock office photo: sharp focus, crisp detail, realistic geometry, no blur.
+8. Видео должно иметь 3 понятных визуальных бита и движение. Не просто руки листают пустой блокнот.
+9. На AI-видео НЕ проси генерировать надписи. Титры мы наложим программно.
+10. Пиши естественным русским языком. Не использовать канцелярит и чрезмерное количество эмодзи.
+11. image_prompt и video_prompt пиши на английском.
 Верни только валидный JSON без markdown."""
 
     user = f"""Создай кампанию для направления: {d['country']}.
@@ -173,7 +174,7 @@ JSON строго такой структуры:
  "subheadline":"короткая расшифровка до 8 слов",
  "telegram_text":"130-190 слов. Сцена узнавания -> внутреннее напряжение/задача -> как помогает Марина -> спокойный CTA. Никакой воды. Добавь телефон и ссылку.",
  "instagram_caption":"70-110 слов, короче и динамичнее Telegram",
- "image_prompt":"подробный premium commercial/editorial travel prompt 4:5; destination-first; specify composition, foreground/midground/background, lens feel, light, atmosphere; no readable text/data/logos; no generic posed office woman",
+ "image_prompt":"подробный premium commercial/editorial travel prompt 4:5; destination-first; architecture/environment dominant; sharp crisp focus; specify foreground/midground/background, lens feel, light, atmosphere; no close-up face, no close-up hands, people only distant/from behind when needed; no blur, no malformed anatomy, no duplicate objects, no readable text/data/logos",
  "video_prompt":"vertical 9:16 premium travel commercial, 6-8 seconds, exactly 3 visual beats/shots described in sequence, meaningful camera movement, destination + travel preparation, aspirational, no dialogue/no captions/no generated text/no logos",
  "reel_hook":"2-5 слов для первых 2 секунд",
  "reel_middle":"3-7 слов для середины",
