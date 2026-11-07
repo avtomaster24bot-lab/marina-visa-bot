@@ -13,6 +13,9 @@ AGNES_TEXT_MODEL = "agnes-2.5-flash"
 BOT_LINK = "https://t.me/MarinaLiderTourBot"
 PHONE = "+7 777 562 2205"
 
+GERMANY_WEIGHT = 19
+DESTINATION_SLOT_COUNT = 20
+
 DESTINATIONS = [
     {"country": "Германия", "service": "визы в Германию", "visual": "Berlin, modern European city, airport departure atmosphere, elegant German travel details"},
     {"country": "Шенген", "service": "шенгенские визы", "visual": "elegant European city streets, rail travel, airport departure board atmosphere, refined Europe travel mood"},
@@ -41,10 +44,26 @@ _BAD_ENDINGS = {
     "в", "на", "за", "из", "с", "со", "к", "по", "о", "об", "от", "до", "для", "при", "без",
     "и", "а", "но", "или", "что", "как", "если", "чтобы", "это", "не"
 }
-_FORBIDDEN_SOCIAL = (
-    "ссылка в шапке", "link in bio", "100%", "гарантия визы", "без отказа",
-    "консульство точно", "вам одобрят", "марина разберётся за вас",
+
+FORBIDDEN_CLAIM_MARKERS = (
+    "ссылка в шапке",
+    "link in bio",
+    "100%",
+    "гарантия визы",
+    "гарантируем визу",
+    "гарантия одобрения",
+    "гарантированное одобрение",
+    "точно получите визу",
+    "вам одобрят",
+    "визу точно одобрят",
+    "без отказа",
+    "без отказов",
+    "консульство точно",
+    "одобрение гаранти",
+    "успех гарантирован",
+    "отказ неизбежен",
 )
+_FORBIDDEN_SOCIAL = FORBIDDEN_CLAIM_MARKERS
 
 
 @dataclass
@@ -69,6 +88,107 @@ class ContentPlan:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def contains_forbidden_claims(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in FORBIDDEN_CLAIM_MARKERS)
+
+
+def public_copy_texts(plan) -> list[str]:
+    """All user-visible strings that can appear on a post, card, or reel."""
+    texts = [
+        getattr(plan, "headline", ""),
+        getattr(plan, "subheadline", ""),
+        getattr(plan, "telegram_text", ""),
+        getattr(plan, "instagram_caption", ""),
+        getattr(plan, "reel_hook", ""),
+        getattr(plan, "reel_middle", ""),
+        getattr(plan, "reel_cta", ""),
+    ]
+    texts.extend(getattr(plan, "carousel_slides", None) or [])
+    texts.extend(getattr(plan, "story_slides", None) or [])
+    return [str(item or "") for item in texts]
+
+
+def plan_copy_is_safe(plan) -> bool:
+    if not str(getattr(plan, "telegram_text", "") or "").strip():
+        return False
+    return not any(contains_forbidden_claims(item) for item in public_copy_texts(plan))
+
+
+def destination_for_country(country: str) -> dict:
+    for item in DESTINATIONS:
+        if item["country"] == country:
+            return item
+    return germany_destination()
+
+
+def ensure_safe_plan(plan):
+    """Replace unsafe public copy with a fallback that keeps the same country."""
+    if plan_copy_is_safe(plan):
+        return plan
+    country = getattr(plan, "country", "") or germany_destination()["country"]
+    print(f"[content] unsafe public copy; falling back while keeping country={country}")
+    return _fallback(destination=destination_for_country(country))
+
+
+def germany_destination() -> dict:
+    for item in DESTINATIONS:
+        if item["country"] == "Германия":
+            return item
+    raise RuntimeError("Germany destination is missing from DESTINATIONS")
+
+
+def other_destinations() -> list[dict]:
+    return [item for item in DESTINATIONS if item["country"] != "Германия"]
+
+
+def choose_destination(rng: Optional[random.Random] = None) -> dict:
+    """Return Germany with a 95% chance on each independent draw (19 of 20 slots).
+
+    This is a per-call probability, not a guaranteed quota of 19 Germany posts
+    in every 20 publishes. There is no persistent history or catch-up.
+    """
+    picker = rng or random
+    roll = picker.randrange(DESTINATION_SLOT_COUNT)
+    if roll < GERMANY_WEIGHT:
+        return germany_destination()
+    alternatives = other_destinations()
+    if not alternatives:
+        return germany_destination()
+    return picker.choice(alternatives)
+
+
+def default_reel_scenes(country: str) -> list[dict]:
+    """Five hook-to-CTA beats for a 15-25 second motion reel."""
+    return [
+        {
+            "label": f"{country.upper()}: ПЛАНИРУЕТЕ ПОЕЗДКУ?",
+            "headline": "Начните не с чемодана.",
+            "body": "Начните с плана подготовки.",
+        },
+        {
+            "label": "ШАГ 1 · ЦЕЛЬ ПОЕЗДКИ",
+            "headline": "Зачем вы едете?",
+            "body": "Сформулируйте цель и вопросы для консультации.",
+        },
+        {
+            "label": "ШАГ 2 · ВАША СИТУАЦИЯ",
+            "headline": "Что уже готово?",
+            "body": "Соберите свои вопросы. Отметьте, что нужно уточнить.",
+        },
+        {
+            "label": "ШАГ 3 · ЯСНЫЙ ПЛАН",
+            "headline": "Не гадайте о требованиях.",
+            "body": "Проверяйте актуальные сведения по официальным источникам.",
+        },
+        {
+            "label": "ОТ ВОПРОСОВ К ПЛАНУ",
+            "headline": f"Напишите: «{country}».",
+            "body": "Попросите консультацию по подготовке к поездке.",
+        },
+    ]
 
 
 def _headers() -> dict:
@@ -130,8 +250,7 @@ def _valid_slide(text: str, *, max_words: int, max_chars: int) -> bool:
     s = _clean_slide(text)
     if not s:
         return False
-    low = s.lower()
-    if any(x in low for x in _FORBIDDEN_SOCIAL):
+    if contains_forbidden_claims(s):
         return False
     words = s.split()
     if len(words) < 2 or len(words) > max_words or len(s) > max_chars:
@@ -146,21 +265,19 @@ def _valid_slide(text: str, *, max_words: int, max_chars: int) -> bool:
 
 def _fallback_social(country: str) -> tuple[list[str], list[str]]:
     carousel = [
-        f"ВИЗА В {country.upper()}: С ЧЕГО НАЧАТЬ?",
-        "ИНФОРМАЦИИ МНОГО, А ЯСНОСТИ НЕТ",
-        "СНАЧАЛА РАЗБЕРИТЕ СВОЮ СИТУАЦИЮ",
-        "МАРИНА ПОМОЖЕТ СОБРАТЬ ПЛАН ДЕЙСТВИЙ",
-        "ЕСТЬ ВОПРОСЫ? НАПИШИТЕ НАМ",
+        f"{country.upper()}: С ЧЕГО НАЧАТЬ?",
+        "СНАЧАЛА ЦЕЛЬ, ПОТОМ ВОПРОСЫ",
+        "СОБЕРИТЕ ВОПРОСЫ ПО СИТУАЦИИ",
+        "ПРОВЕРЯЙТЕ ОФИЦИАЛЬНЫЕ ИСТОЧНИКИ",
+        "НАПИШИТЕ НАМ ДЛЯ КОНСУЛЬТАЦИИ",
     ]
     stories = [
-        f"ПЛАНИРУЕТЕ ПОЕЗДКУ В {country.upper()}?",
-        "НЕ ЗНАЕТЕ, С ЧЕГО НАЧАТЬ?",
-        "РАЗБЕРЁМ ВАШУ СИТУАЦИЮ ПО ШАГАМ",
-        "НАПИШИТЕ МАРИНЕ",
+        f"{country.upper()}: ПЛАНИРУЕТЕ ПОЕЗДКУ?",
+        "НАЧНИТЕ НЕ С ЧЕМОДАНА",
+        "РАЗЛОЖИМ ПОДГОТОВКУ ПО ШАГАМ",
+        "НАПИШИТЕ НАМ",
     ]
     return carousel, stories
-
-
 
 
 def _review_social_copy(country: str, carousel_raw, stories_raw) -> tuple[list[str], list[str]]:
@@ -176,7 +293,7 @@ def _review_social_copy(country: str, carousel_raw, stories_raw) -> tuple[list[s
 - законченность мысли;
 - отсутствие обрыва;
 - отсутствие канцелярита и бессмысленных абстракций;
-- отсутствие обещаний результата;
+- отсутствие обещаний результата, сроков рассмотрения или одобрения визы;
 - отсутствие CTA «ссылка в шапке профиля»;
 - карусель: до 8 слов и до 58 символов;
 - Stories: до 7 слов и до 46 символов.
@@ -234,36 +351,56 @@ def _default_social_visuals(d: dict) -> list[str]:
     ]
 
 
-def _fallback() -> ContentPlan:
-    d = random.choice(DESTINATIONS)
+def _fallback_telegram_text(country: str) -> str:
+    return (
+        f"📅 {datetime.now().strftime('%d.%m.%Y')}\n\n"
+        f"Направление — {country}. Начните не с чемодана, а с ясного плана.\n\n"
+        "Если вопросов пока больше, чем ответов, разложите подготовку на три шага:\n\n"
+        "1. Сформулируйте цель поездки и свои вопросы.\n"
+        "2. Отметьте, что у вас уже готово и что требует уточнения.\n"
+        "3. Проверьте актуальные сведения по официальным источникам и обсудите свою ситуацию на консультации.\n\n"
+        f"Напишите «{country}» и попросите консультацию по подготовке к поездке. "
+        "Без обещаний одобрения: решение по визе принимает уполномоченный орган.\n\n"
+        "Это материал о подходе к подготовке, а не перечень обязательных документов "
+        "или индивидуальная визовая рекомендация.\n\n"
+        f"Напишите Марине: {PHONE}\nОставить заявку: {BOT_LINK}"
+    )
+
+
+def _fallback(destination: Optional[dict] = None, rng: Optional[random.Random] = None) -> ContentPlan:
+    d = destination or choose_destination(rng)
     carousel, stories = _fallback_social(d["country"])
     return ContentPlan(
         country=d["country"], service=d["service"], content_format="clarity",
         angle="поездка уже в планах, а визовую подготовку хочется пройти спокойно",
         goal="получить заявку на консультацию",
         headline=f"{d['country'].upper()}: ПОЕЗДКА НАЧИНАЕТСЯ С ПЛАНА",
-        subheadline="Разберём визовую подготовку по шагам",
-        telegram_text=(
-            f"📅 {datetime.now().strftime('%d.%m.%Y')}\n\n"
-            f"Планируете поездку в {d['country']}? Самая неприятная часть подготовки начинается не с чемодана, а с десятков вкладок и противоречивых советов.\n\n"
-            "Марина помогает разложить вашу визовую задачу по шагам: понять, что уже подготовлено, какие вопросы относятся именно к вашей ситуации и что стоит дополнительно проверить по официальным источникам. Без обещаний за консульство и без выдуманных требований.\n\n"
-            "Вы сохраняете контроль над поездкой, но не тратите время на хаотичный поиск информации.\n\n"
-            f"Напишите Марине: {PHONE}\nОставить заявку: {BOT_LINK}"
+        subheadline="Разберём подготовку по шагам",
+        telegram_text=_fallback_telegram_text(d["country"]),
+        instagram_caption=(
+            f"Поездка в {d['country']} уже в планах? Начните не с чемодана, а с ясного плана подготовки. "
+            "Сформулируйте цель, отметьте открытые вопросы и уточните актуальные сведения по официальным источникам. "
+            f"Напишите «{d['country']}» и попросите консультацию. Без обещаний одобрения: решение по визе принимает уполномоченный орган. "
+            f"Заявка: {BOT_LINK}"
         ),
-        instagram_caption=f"Поездка в {d['country']} уже в планах? Визовую подготовку легче проходить, когда она разложена по понятным шагам. Марина поможет структурировать вашу ситуацию и подготовиться без хаотичного поиска. Заявка: {BOT_LINK}",
         image_prompt=(f"Premium travel campaign photograph, {d['visual']}. Destination-first composition, cinematic natural light, sophisticated editorial travel advertising, subtle closed passport and travel folder in foreground, no readable data, no text, no logos, no watermark, no generic woman posing at desk, photorealistic, 4:5 vertical."),
         video_prompt=(f"Premium cinematic vertical travel commercial for {d['country']}. Open on a beautiful destination/departure moment, then a natural travel preparation detail, then traveler confidently moving toward departure. 3 distinct shots, elegant camera movement, premium lighting, aspirational not bureaucratic, no dialogue, no generated text, no logos, 9:16."),
-        reel_hook=f"ПЛАНИРУЕТЕ {d['country'].upper()}?",
-        reel_middle="ВИЗОВУЮ ПОДГОТОВКУ МОЖНО УПРОСТИТЬ",
-        reel_cta="РАЗБЕРЁМ ВАШУ СИТУАЦИЮ",
+        reel_hook=f"{d['country'].upper()}: ПЛАНИРУЕТЕ ПОЕЗДКУ?",
+        reel_middle="НАЧНИТЕ С ЯСНОГО ПЛАНА",
+        reel_cta=f"НАПИШИТЕ: {d['country'].upper()}",
         carousel_slides=carousel,
         story_slides=stories,
         social_visual_prompts=_default_social_visuals(d),
     )
 
 
+def build_offline_plan(destination: Optional[dict] = None, rng: Optional[random.Random] = None) -> ContentPlan:
+    """Return a complete plan without calling any external API."""
+    return _fallback(destination=destination, rng=rng)
+
+
 def generate_content_plan() -> ContentPlan:
-    d = random.choice(DESTINATIONS)
+    d = choose_destination()
     fmt, angle = random.choice(CONTENT_FORMATS)
     archetype = random.choice(VISUAL_ARCHETYPES)
 
@@ -271,8 +408,8 @@ def generate_content_plan() -> ContentPlan:
 Создай цельную рекламную кампанию из одного сильного инсайта.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
-1. Никаких выдуманных визовых требований, сроков, сборов, списков документов, финансовых норм, вероятности одобрения или гарантий.
-2. Не использовать страх, давление, «100%», «без отказа» и обещания за консульство.
+1. Никаких выдуманных визовых требований, сроков рассмотрения, сборов, списков документов, финансовых норм, вероятности одобрения или гарантий.
+2. Не использовать страх, давление, «100%», «без отказа», «вам одобрят» и обещания за консульство.
 3. Один пост = одна идея. Визуал, карусель, Stories и видео раскрывают ту же идею.
 4. Визуал destination-first: страна, архитектура, аэропорт, дорога, поездка. Лица/руки не являются главным объектом.
 5. Картинки резкие, premium editorial/commercial, realistic geometry, no blur.
@@ -280,8 +417,9 @@ def generate_content_plan() -> ContentPlan:
 7. Русский язык должен быть грамотным, естественным и законченным.
 8. КАРУСЕЛЬ: ровно 5 самостоятельных законченных фраз. Каждая 2-8 слов и максимум 58 символов. Нельзя обрывать фразу. Нельзя заканчивать предлогом/союзом. Структура: hook -> проблема -> объяснение -> решение -> CTA.
 9. STORIES: ровно 4 самостоятельных законченных фразы. Каждая 2-7 слов и максимум 46 символов. Структура: hook -> вопрос/напряжение -> решение -> CTA.
-10. Запрещены CTA «ссылка в шапке профиля» и «link in bio». Используй универсально: «Напишите нам», «Напишите Марине», «Оставьте заявку».
-11. social_visual_prompts: ровно 5 РАЗНЫХ сцен одной кампании. Все на английском. Сцены должны визуально отличаться, но сохранять одну страну/палитру/настроение. Каждая сцена безопасна для crop 4:5 и 9:16 и имеет negative space под текст.
+10. Запрещены CTA «ссылка в шапке профиля» и «link in bio». Используй универсально: «Напишите нам», «Напишите Марине», «Оставьте заявку», либо «Напишите: <страна>».
+11. reel_hook — цепляющий вопрос или паттерн-интеррапт на 2-5 слов. reel_cta — конкретное действие без гарантии результата.
+12. social_visual_prompts: ровно 5 РАЗНЫХ сцен одной кампании. Все на английском. Сцены должны визуально отличаться, но сохранять одну страну/палитру/настроение. Каждая сцена безопасна для crop 4:5 и 9:16 и имеет negative space под текст.
 Верни только валидный JSON без markdown."""
 
     user = f"""Создай кампанию для направления: {d['country']}.
@@ -291,17 +429,18 @@ def generate_content_plan() -> ContentPlan:
 Допустимый визуальный контекст: {d['visual']}.
 Цель: заявка на консультацию.
 Разрешенные бизнес-факты: специалист Марина; телефон {PHONE}; Telegram-бот {BOT_LINK}.
+Нельзя обещать одобрение визы, сроки решения консульства или фиксированный список документов.
 
 JSON строго такой структуры:
 {{
- "country":"...",
- "service":"...",
+ "country":"{d['country']}",
+ "service":"{d['service']}",
  "content_format":"{fmt}",
  "angle":"...",
  "goal":"получить заявку на консультацию",
  "headline":"сильный рекламный заголовок 3-7 слов",
  "subheadline":"короткая расшифровка до 8 слов",
- "telegram_text":"130-190 слов: узнаваемая сцена -> задача -> как помогает Марина -> CTA; добавь телефон и ссылку",
+ "telegram_text":"130-190 слов: узнаваемая сцена -> задача -> как помогает Марина -> CTA; добавь телефон и ссылку; без гарантий и сроков одобрения",
  "instagram_caption":"70-110 слов",
  "image_prompt":"premium commercial/editorial travel prompt 4:5, destination-first, sharp crisp focus, no close-up faces/hands, no text/data/logos",
  "video_prompt":"vertical 9:16 premium travel commercial, 6-8 seconds, exactly 3 visual beats, no dialogue/captions/generated text/logos",
@@ -315,14 +454,16 @@ JSON строго такой структуры:
 
     data = _extract_json(_agnes_chat(system, user) or "")
     if not data:
-        return _fallback()
+        return _fallback(destination=d)
 
     try:
         tg = str(data["telegram_text"]).strip()
         if not tg.startswith("📅"):
             tg = f"📅 {datetime.now().strftime('%d.%m.%Y')}\n\n{tg}"
 
-        country = str(data.get("country") or d["country"]).strip()
+        # Keep the already chosen destination authoritative so the model cannot switch it.
+        country = d["country"]
+
         reviewed_carousel, reviewed_stories = _review_social_copy(
             country,
             data.get("carousel_slides", []),
@@ -341,9 +482,9 @@ JSON строго такой структуры:
             prompts.append(defaults[len(prompts)])
         prompts = prompts[:5]
 
-        return ContentPlan(
+        plan = ContentPlan(
             country=country,
-            service=str(data.get("service") or d["service"]).strip(),
+            service=d["service"],
             content_format=str(data.get("content_format") or fmt).strip(),
             angle=str(data.get("angle") or angle).strip(),
             goal="получить заявку на консультацию",
@@ -360,6 +501,10 @@ JSON строго такой структуры:
             story_slides=stories,
             social_visual_prompts=prompts,
         )
+        if not plan_copy_is_safe(plan):
+            print("[content] generated copy failed full safety gate; using fallback")
+            return _fallback(destination=d)
+        return plan
     except Exception as exc:
         print(f"[content] invalid plan fields: {exc}")
-        return _fallback()
+        return _fallback(destination=d)
