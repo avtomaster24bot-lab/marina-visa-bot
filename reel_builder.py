@@ -104,7 +104,11 @@ def build_branded_reel(
         out = td / "reel.mp4"
         cmd = [ffmpeg, "-y"]
         for p in image_paths:
-            cmd += ["-loop", "1", "-t", f"{seconds_per_slide:.3f}", "-i", str(p)]
+            # One still per scene. zoompan's d= creates the slide length.
+            # `-loop 1 -t N` plus zoompan d>1 expands every looped input frame
+            # by d, so the first scene alone can last minutes and `-t` then
+            # keeps only that first scene.
+            cmd += ["-framerate", "24", "-i", str(p)]
 
         music = _resolve_music(td, total_duration)
         cmd += ["-stream_loop", "-1", "-i", str(music)]
@@ -117,9 +121,13 @@ def build_branded_reel(
                 "scale=1080:1920:force_original_aspect_ratio=increase,"
                 "crop=1080:1920,"
                 f"zoompan=z='min(zoom+0.00045,1.04)':"
+                "x='iw/2-(iw/zoom/2)':"
+                "y='ih/2-(ih/zoom/2)':"
                 f"d={frames_per_slide}:"
                 "s=1080x1920:"
                 "fps=24,"
+                f"trim=duration={seconds_per_slide:.3f},"
+                "setpts=PTS-STARTPTS,"
                 "setsar=1,"
                 "format=yuv420p"
                 f"[v{i}]"
